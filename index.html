@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dashboard</title>
+<script>
+const SHEET_ID = "1Gl6H-bmAR6WxKfTh5i853n7FgrAFu9J0lJ5rrJTFOp8";
+
+const SHEETS = {
+  sales: `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=0`
+};
+
+async function loadData() {
+  const response = await fetch(SHEETS.sales);
+  const data = await response.text();
+  document.getElementById("data").innerText = data;
+}
+
+window.onload = loadData;
+</script>
+</head>
+<body>
+<h2>Sales Data (Live from Google Sheets)</h2>
+<pre id="data">Loading...</pre>
+</body>
+</html>
