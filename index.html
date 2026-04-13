@@ -6,6 +6,7 @@
 <title>SAAFAH — Chairman's Business Review 2026</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Nunito+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   /* ═══════════════════════════════════════════
      THEME SYSTEM — LIGHT (default) & DARK
@@ -846,7 +847,7 @@
       <div class="card anim-in">
         <div class="section-title">Stage Detail — This Month</div>
         <div id="sales-stage-details-month" style="display:flex;flex-direction:column;gap:14px;">
-          <div style="font-size:11px;color:var(--text-muted);">This block refreshes from the Google Sheet and shows client/value detail by stage.</div>
+          <div style="font-size:11px;color:var(--text-muted);">This block refreshes from the Excel workbook and shows client/value detail by stage.</div>
         </div>
       </div>
     </div>
@@ -855,7 +856,7 @@
       <div class="card anim-in">
         <div class="section-title">Stage Detail — This Week</div>
         <div id="sales-stage-details-week" style="display:flex;flex-direction:column;gap:14px;">
-          <div style="font-size:11px;color:var(--text-muted);">Weekly detail is shown from the new Sales_Stage_Details sheet.</div>
+          <div style="font-size:11px;color:var(--text-muted);">Weekly detail is shown from the Sales_Stage_Details sheet inside the Excel workbook.</div>
         </div>
       </div>
       <div class="card anim-in">
@@ -910,9 +911,9 @@
 
 
 <script>
-const GOOGLE_SHEET_CONFIG = {
-  spreadsheetId: '1Gl6H-bmAR6WxKfTh5i853n7FgrAFu9J0lJ5rrJTFOp8',
-  workbookUrl: 'https://docs.google.com/spreadsheets/d/1Gl6H-bmAR6WxKfTh5i853n7FgrAFu9J0lJ5rrJTFOp8/edit?usp=sharing'
+const WORKBOOK_CONFIG = {
+  workbookFile: 'saafah_dashboard_vercel_data.xlsx',
+  workbookLabel: 'Excel workbook'
 };
 
 const dashboardData = {
@@ -1013,30 +1014,62 @@ const dashboardData = {
   }
 };
 
-function parseGoogleVisualizationResponse(text) {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end === -1) throw new Error('Invalid Google Sheets response');
-  const json = JSON.parse(text.slice(start, end + 1));
-  const cols = (json.table.cols || []).map((c, i) => c.label || c.id || `col_${i + 1}`);
-  const rows = (json.table.rows || []).map(row => {
-    const obj = {};
-    cols.forEach((col, idx) => {
-      const cell = row.c && row.c[idx] ? row.c[idx] : null;
-      obj[col] = cell ? (cell.f ?? cell.v ?? null) : null;
+let workbookCachePromise = null;
+
+async function getWorkbook(forceRefresh = false) {
+  if (!workbookCachePromise || forceRefresh) {
+    const url = `${WORKBOOK_CONFIG.workbookFile}${forceRefresh ? `?v=${Date.now()}` : ''}`;
+    workbookCachePromise = fetch(url, { cache: 'no-store' }).then(async response => {
+      if (!response.ok) throw new Error(`Failed loading workbook: ${response.status}`);
+      const buffer = await response.arrayBuffer();
+      return XLSX.read(buffer, { type: 'array', cellDates: true, cellFormula: true, cellText: true });
     });
-    return obj;
-  });
-  return rows;
+  }
+  return workbookCachePromise;
 }
 
-async function fetchSheetRows(sheetName, range) {
-  const qRange = range ? `&range=${encodeURIComponent(range)}` : '';
-  const url = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_CONFIG.spreadsheetId}/gviz/tq?sheet=${encodeURIComponent(sheetName)}${qRange}&tqx=out:json`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Failed loading ${sheetName}`);
-  const text = await response.text();
-  return parseGoogleVisualizationResponse(text);
+function cellValueForDashboard(cell) {
+  if (!cell) return null;
+  if (cell.w !== undefined && cell.w !== null && cell.w !== '') return cell.w;
+  if (cell.v !== undefined && cell.v !== null) return cell.v;
+  if (cell.f) return `=${cell.f}`;
+  return null;
+}
+
+function sheetRangeToObjects(ws, range) {
+  const ref = range || ws['!ref'];
+  if (!ref) return [];
+  const decoded = XLSX.utils.decode_range(ref);
+  const matrix = [];
+  for (let r = decoded.s.r; r <= decoded.e.r; r++) {
+    const row = [];
+    for (let c = decoded.s.c; c <= decoded.e.c; c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      row.push(cellValueForDashboard(ws[addr]));
+    }
+    matrix.push(row);
+  }
+  if (!matrix.length) return [];
+  const headers = (matrix[0] || []).map((h, idx) => {
+    const label = h === null || h === undefined ? '' : String(h).trim();
+    return label || `col_${idx + 1}`;
+  });
+  return matrix.slice(1)
+    .filter(row => row.some(v => v !== null && v !== undefined && String(v).trim() !== ''))
+    .map(row => {
+      const obj = {};
+      headers.forEach((header, idx) => {
+        obj[header] = row[idx] ?? null;
+      });
+      return obj;
+    });
+}
+
+async function fetchSheetRows(sheetName, range, forceRefresh = false) {
+  const workbook = await getWorkbook(forceRefresh);
+  const sheet = workbook.Sheets[sheetName];
+  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+  return sheetRangeToObjects(sheet, range);
 }
 
 function parseNumeric(value) {
